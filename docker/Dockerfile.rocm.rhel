@@ -1,0 +1,98 @@
+ARG BASE_IMAGE=redhat/ubi9:9.4
+ARG FA_BRANCH="b3ae496"
+ARG FA_REPO="https://github.com/ROCm/flash-attention.git"
+ARG AITER_BRANCH="916bf3c"
+ARG AITER_REPO="https://github.com/ROCm/aiter.git"
+
+FROM ${BASE_IMAGE} AS base
+ENV GPU_ARCHS="gfx90a"
+ENV PYTORCH_ROCM_ARCH="gfx90a" 
+ENV PATH=/opt/rocm/llvm/bin:$PATH
+ENV ROCM_PATH=/opt/rocm
+ENV LD_LIBRARY_PATH=/opt/rocm/lib:/usr/local/lib:
+ARG PYTORCH_ROCM_ARCH=gfx90a
+ENV PYTORCH_ROCM_ARCH=${PYTORCH_ROCM_ARCH}
+ENV HIP_FORCE_DEV_KERNARG=1
+ARG PYTHON_VERSION=3.12
+
+RUN mkdir -p /app
+WORKDIR /root
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Disable subscription manager in UBI
+RUN subscription-manager unregister || true
+
+# Add ROCm 6.4.3 YUM repo
+RUN tee /etc/yum.repos.d/rocm.repo <<'EOF'
+[ROCm-6.4.3]
+name=ROCm6.4.3
+baseurl=https://repo.radeon.com/rocm/el9/6.4.3/main
+enabled=1
+priority=50
+gpgcheck=1
+gpgkey=https://repo.radeon.com/rocm/rocm.gpg.key
+EOF
+
+# Install ROCm and dependencies
+RUN dnf clean all && \
+    dnf install -y https://artifactory-cdn.amd.com/artifactory/list/amdgpu-rpm-remote/rhel/amd-nonfree-rhel-mirrors-9-1.noarch.rpm && \
+    dnf install -y rocm && \ 
+    usermod -aG render root && \
+    usermod -aG video root
+
+# Install devlopment package
+RUN dnf install python python3-devel wget git cmake  g++ gcc ninja-build libsndfile -y
+
+# Setup up python 3.12 environment via uv
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
+    echo 'export PATH="/root/.local/bin:$PATH"' >> ~/.bashrc && \
+    echo 'source /root/.venv/bin/activate' >> ~/.bashrc
+
+# Set the uv python environment with path
+ENV PATH="/root/.local/bin:$PATH"
+ENV PATH="/root/.venv/bin:$PATH"
+
+# Create the uv environment
+RUN uv venv --python 3.12 --seed
+
+# Install Pytorch 2.8.0 pre-built with ROCm 6.4
+RUN python3 -m pip uninstall torch -y \
+    && python3 -m pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.4
+
+# Build flash attention for ROCm
+RUN python3 -m pip install ninja cmake wheel pybind11 packaging \
+    && git clone https://github.com/ROCm/flash-attention.git \
+    && cd flash-attention \
+    && git checkout v2.8.0-cktile \
+    && git submodule update --init \
+    && python3 setup.py install \
+    && cd ..
+
+# Build AITER with ROCm 6.4 for vllm v0.10.0
+RUN python3 -m pip uninstall -y aiter \ 
+    && git clone --recursive https://github.com/ROCm/aiter.git \
+    && cd aiter && git checkout 916bf3c \
+    && git submodule sync; git submodule update --init --recursive \
+    && python3 setup.py develop \
+    && cd ..
+
+# Build vllm 0.10.0 release
+RUN python3 -m pip install --upgrade pip \
+    && python3 -m pip install /opt/rocm/share/amd_smi \
+    && python3 -m pip install --upgrade numba scipy huggingface-hub[cli,hf_transfer] setuptools_scm \
+    && git clone https://github.com/vllm-project/vllm \
+    && cd vllm && git checkout releases/v0.10.0 \
+    && python3 -m pip install -r requirements/rocm.txt \
+    && python3 setup.py develop
+
+ARG BASE_IMAGE
+ARG FA_BRANCH
+ARG FA_REPO
+ARG AITER_BRANCH
+ARG AITER_REPO
+RUN echo "BASE_IMAGE: ${BASE_IMAGE}" > /app/versions.txt \
+    && echo "FA_BRANCH: ${FA_BRANCH}" >> /app/versions.txt \
+    && echo "AITER_BRANCH: ${AITER_BRANCH}" >> /app/versions.txt \
+    && echo "AITER_REPO: ${AITER_REPO}" >> /app/versions.txt
+
+WORKDIR /app
