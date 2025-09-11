@@ -33,9 +33,12 @@ gpgcheck=1
 gpgkey=https://repo.radeon.com/rocm/rocm.gpg.key
 EOF
 
+RUN --mount=type=bind,source=./rpm_package,target=/tmp/rpm_package \
+    dnf install -y /tmp/rpm_package/*.rpm
+
 # Install ROCm and dependencies
 RUN dnf clean all && \
-    dnf install -y https://artifactory-cdn.amd.com/artifactory/list/amdgpu-rpm-remote/rhel/amd-nonfree-rhel-mirrors-9-1.noarch.rpm && \
+    #dnf install -y https://artifactory-cdn.amd.com/artifactory/list/amdgpu-rpm-remote/rhel/amd-nonfree-rhel-mirrors-9-1.noarch.rpm && \
     dnf install -y rocm && \ 
     usermod -aG render root && \
     usermod -aG video root
