@@ -5,6 +5,8 @@ ARG AITER_BRANCH="4822e675"
 ARG AITER_REPO="https://github.com/ROCm/aiter.git"
 
 FROM ${BASE_IMAGE} AS base
+ARG USERNAME
+ARG PASSWD
 ENV GPU_ARCHS="gfx90a"
 ENV PYTORCH_ROCM_ARCH="gfx90a" 
 ENV PATH=/opt/rocm/llvm/bin:$PATH
@@ -19,8 +21,20 @@ RUN mkdir -p /app
 WORKDIR /root
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Disable subscription manager in UBI
-RUN subscription-manager unregister || true
+# Setup subscription manager in UBI
+RUN subscription-manager register --username "${USERNAME}" --password "${PASSWD}"
+RUN subscription-manager attach --auto
+RUN dnf update -y --releasever=9.4 --exclude=\*release\* && \
+    dnf clean all
+RUN dnf install -y wget && \
+    wget https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm && \
+    rpm -ivh epel-release-latest-9.noarch.rpm
+RUN dnf install -y dnf-plugin-config-manager && \
+    crb enable
+
+# Install devlopment package
+RUN dnf install -y python3-setuptools python3-wheel python python3-devel python3-argcomplete && \
+    dnf install -y wget git cmake  g++ gcc ninja-build libsndfile logrotate
 
 # Add ROCm 6.4.3 YUM repo
 RUN tee /etc/yum.repos.d/rocm.repo <<'EOF'
@@ -33,17 +47,11 @@ gpgcheck=1
 gpgkey=https://repo.radeon.com/rocm/rocm.gpg.key
 EOF
 
-RUN --mount=type=bind,source=./rpm_package,target=/tmp/rpm_package \
-    dnf install -y /tmp/rpm_package/*.rpm
-
 # Install ROCm and dependencies
 RUN dnf clean all && \
     dnf install -y rocm && \ 
     usermod -aG render root && \
     usermod -aG video root
-
-# Install devlopment package
-RUN dnf install python python3-devel wget git cmake  g++ gcc ninja-build libsndfile -y
 
 # Setup up python 3.12 environment via uv
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
@@ -78,7 +86,7 @@ RUN python3 -m pip uninstall -y aiter \
     && python3 setup.py develop \
     && cd ..
 
-# Build vllm 0.11.2rc2 release
+# Build vllm 0.10.2rc2 release
 RUN python3 -m pip install --upgrade pip \
     && python3 -m pip install /opt/rocm/share/amd_smi \
     && python3 -m pip install --upgrade numba scipy huggingface-hub[cli,hf_transfer] setuptools_scm \
