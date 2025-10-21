@@ -1,0 +1,251 @@
+# syntax=docker/dockerfile:1
+#FROM kir.alibaba-inc.com:30403/kis-docker-hub/gpu:alinux3_x86-3.220822.1_2024_10_22_13_50_15
+FROM kir.alibaba-inc.com/kis-docker-hub/amd:alinux3-rocm_6.4.1-py_3.10_2025_04_27_14_59_43 AS base 
+## Basic arguments and environment parameters
+ARG GFX_ARCH="gfx942"
+ARG GPU_DEVICE_TARGETS="gfx942"
+ENV _GLIBCXX_USE_CXX11_ABI=1
+
+## Setup ROCm repo
+# (source: https://artifactory-cdn.amd.com/artifactory/list/amdgpu-rpm/rhel/amdgpu-install-internal-6.4_8-1.noarch.rpm)
+#ARG AMDGPU_BUILD_ID="2152768"
+#ARG ROCM_BUILD_ID="compute-rocm-rel-6.4/60"
+#ARG ROCM_RPM="amdgpu-install-internal-6.4_8-1.noarch.rpm"
+#RUN --mount=type=bind,source=${ROCM_RPM},target=/tmp/amdgpu-install.rpm \ 
+#    dnf install -y wget /tmp/amdgpu-install.rpm && \
+#    dnf clean dbcache
+#RUN amdgpu-repo --amdgpu-build=${AMDGPU_BUILD_ID} --rocm-build=${ROCM_BUILD_ID}
+
+# ## Install amdgpu-install for local repo
+# COPY amdgpu-install /usr/local/bin/amdgpu-install
+# RUN chmod a+x /usr/local/bin/amdgpu-install
+# # (please setup local repo)
+
+## Install ROCm
+#RUN amdgpu-install --usecase=rocm -y && \ 
+#    dnf install -y findutils sqlite-devel  && \
+#    dnf clean dbcache && \
+#    find /opt/rocm/lib -type f -name '*gfx*' | grep -Ev "${GFX_ARCH}" | xargs rm -f && \
+#    find /opt/rocm/lib/hipblaslt/library -type f -name '*gfx*' | grep -Ev "${GFX_ARCH}" | xargs rm -f && \
+#    find /opt/rocm/lib/rocblas/library -type f -name '*gfx*' | grep -Ev "${GFX_ARCH}" | xargs rm -f && \
+#    find /opt/rocm/share/miopen/db -type f -name '*gfx*' | grep -Ev "${GFX_ARCH}" | xargs rm -f && \
+#    sqlite3 /opt/rocm/lib/rocfft/rocfft_kernel_cache.db "delete from cache_v1 where arch != '${GFX_ARCH}' ; vacuum"
+
+ARG ROCM_VERSION="6.4.1"
+ENV ROCM_HOME="/opt/rocm-${ROCM_VERSION}"
+ENV CMAKE_PREFIX_PATH="$ROCM_HOME/lib/cmake:$CMAKE_PREFIX_PATH"
+ENV CPLUS_INCLUDE_PATH="$ROCM_HOME/include:$CPLUS_INCLUDE_PATH"
+ENV LD_LIBRARY_PATH="$ROCM_HOME/lib:/usr/local/lib:$LD_LIBRARY_PATH"
+ENV PATH="$ROCM_HOME/bin:$PATH"
+
+## Install Python 3.10.12
+#ARG PYTHON_RPM="python3.10-3.10.12-1.al8.x86_64.rpm"
+#ARG PYTHON_DEBUG_INFO_RPM="python3.10-debuginfo-3.10.12-1.al8.x86_64.rpm"
+#ARG PYTHON_DEBUG_SRC_RPM="python3.10-debugsource-3.10.12-1.al8.x86_64.rpm"
+#RUN --mount=type=bind,source=pyrpms,target=/tmp/rpms \ 
+#    dnf install -y /tmp/rpms/${PYTHON_RPM} /tmp/rpms/${PYTHON_DEBUG_INFO_RPM} /tmp/rpms/${PYTHON_DEBUG_SRC_RPM} && \
+#    dnf clean dbcache
+
+RUN rm -f /etc/yum.repos.d/amdgpu.repo && \
+    dnf install -y python3 python3-devel wget git cmake gcc gcc-c++ ninja-build libsndfile && \
+    dnf clean all
+
+WORKDIR /root
+# Setup up python 3.12 environment via uv
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
+    echo 'export PATH="/root/.local/bin:$PATH"' >> ~/.bashrc && \
+    echo 'source /root/.venv/bin/activate' >> ~/.bashrc
+
+# Set the uv python environment with path
+ENV PATH="/root/.local/bin:$PATH"
+ENV PATH="/root/.venv/bin:$PATH"
+
+# Create the uv environment
+RUN uv venv --python 3.12 --seed
+
+## Install basic packages
+RUN dnf groupinstall -y "Development Tools" && dnf clean dbcache
+
+## Upgrade pip and install dependencies
+RUN pip install --upgrade setuptools==68.2.2 wheel==0.42.0 setuptools-scm==8.1.0 && \ 
+    python3 -m pip install --upgrade pip && \
+    pip cache purge
+
+## Install pre-built whls
+# source: https://repo.radeon.com/rocm/manylinux/rocm-rel-6.4.1/
+ARG APEX_WHL="apex-1.7.0a0+rocm6.4.1.gita6c33a13-cp312-cp312-linux_x86_64.whl"
+ARG PYTORCH_TRITON_WHL="pytorch_triton_rocm-3.3.1+rocm6.4.1.git40e90a0a-cp312-cp312-linux_x86_64.whl"
+ARG TORCH_AUDIO_WHL="torchaudio-2.7.1+rocm6.4.1.git95c61b41-cp312-cp312-linux_x86_64.whl"
+ARG TORCH_VISION_WHL="torchvision-0.22.1+rocm6.4.1.git59a3e1f9-cp312-cp312-linux_x86_64.whl"
+ARG TORCH_WHL="torch-2.7.1+rocm6.4.1.git2a215e4a-cp312-cp312-linux_x86_64.whl"
+RUN --mount=type=bind,source=py312_whls,target=/tmp/whls \ 
+    pip install /tmp/whls/${PYTORCH_TRITON_WHL} && \
+    pip install /tmp/whls/${TORCH_WHL} && \
+    pip install /tmp/whls/${TORCH_AUDIO_WHL} && \
+    pip install /tmp/whls/${TORCH_VISION_WHL} && \
+    pip install /tmp/whls/${APEX_WHL} && \
+    pip cache purge
+
+## Install Flash Attention
+#ARG FLASH_ATTN_WHL="flash_attn-3.0.0.post1-cp310-cp310-linux_x86_64.whl"
+#RUN --mount=type=bind,source=whls,target=/tmp/whls \ 
+#    pip install /tmp/whls/${FLASH_ATTN_WHL} && \
+#    pip cache purge
+
+## Install xformer and transformer engine
+#ARG TRANS_ENG_WHL="transformer_engine-1.12.0.dev0+b8b92dcc-cp310-cp310-linux_x86_64.whl"
+#ARG XFORMER_WHL="xformers-0.0.30+58e11033.d20250425-cp310-cp310-linux_x86_64.whl"
+#RUN --mount=type=bind,source=whls,target=/tmp/whls \ 
+#    pip install /tmp/whls/${TRANS_ENG_WHL} /tmp/whls/${XFORMER_WHL} && \
+#    pip cache purge
+
+## Install xformers
+ARG XFORMER_WHL="xformers-0.0.32+5f0419af.d20251021-cp39-abi3-linux_x86_64.whl"
+RUN --mount=type=bind,source=py310_whls,target=/tmp/whls \
+    pip install /tmp/whls/${XFORMER_WHL} && \
+    pip cache purge
+
+# Build xFormers
+# WORKDIR /opt
+
+#RUN git clone https://github.com/ROCm/xformers.git
+#WORKDIR /opt/xformers
+#RUN python3 -m pip uninstall -y xformers
+#RUN git checkout 5f0419a && git submodule update --init --recursive
+#RUN PYTORCH_ROCM_ARCH="gfx942" python3 setup.py bdist_wheel --dist-dir=dist
+#RUN python3 -m pip install ./dist/*.whl
+
+#RUN pip install ninja && pip cache purge
+
+
+## Install local cmake
+#COPY cmake-3.26.4 /opt/cmake-3.26.4
+#ENV PATH="/opt/cmake-3.26.4/bin:${PATH}"
+#RUN chmod a+x /opt/cmake-3.26.4/bin/*
+
+# Install local aotriton
+#COPY aotriton /opt/rocm/aotriton
+# RUN cp /opt/rocm/aotriton/lib/*.so /opt/rocm/lib
+# ENV AOTRITON_INSTALLED_PREFIX="/opt/rocm/aotriton"
+# ENV LD_LIBRARY_PATH="${AOTRITON_INSTALLED_PREFIX}/lib:${LD_LIBRARY_PATH:-}"
+#ENV LD_LIBRARY_PATH="/opt/rocm/aotriton/lib:$LD_LIBRARY_PATH"
+
+## Install local magma
+#COPY magma /opt/rocm/magma/
+
+ENV FUSED_MOE_PERSISTENT=1
+ENV HIP_FORCE_DEV_KERNARG=1
+ENV HIP_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+ENV PYTORCH_ROCM_ARCH=${GFX_ARCH}
+ENV RAY_EXPERIMENTAL_NOSET_ROCR_VISIBLE_DEVICES=1
+ENV TORCH_BLAS_PREFER_HIPBLASLT=1
+ENV TRITON_HIP_USE_NEW_STREAM_PIPELINE=1
+ENV VLLM_MOE_PADDING=128
+ENV VLLM_MOE_SHUFFLE=1
+ENV VLLM_SCHED_PREFILL_COUNT=0
+ENV VLLM_USE_ROCM_CUSTOM_PAGED_ATTN=1
+ENV VLLM_USE_TRITON_FLASH_ATTN=0
+
+## Build vLLM
+ARG VLLM_REPO="https://github.com/FionaZZ92/vllm.git"
+ARG VLLM_BRANCH="v0.10.1_xformers"
+ARG VLLM_COMMIT="a9c179c"
+RUN dnf install -y kmod && dnf clean dbcache
+RUN cd /opt && git clone -b ${VLLM_BRANCH} --single-branch ${VLLM_REPO}
+WORKDIR /opt/vllm
+RUN git checkout ${VLLM_COMMIT}
+RUN pip install /opt/rocm/share/amd_smi && \ 
+    pip install --upgrade numba scipy huggingface-hub[cli,hf_transfer] setuptools_scm && \
+    pip install "numpy<2" && \
+    pip install -r requirements/rocm.txt && \
+    pip cache purge
+RUN PYTORCH_ROCM_ARCH=${GFX_ARCH} ROCM_HOME=$ROCM_HOME python3 setup.py develop
+
+RUN pip install librosa && \
+    pip cache purge
+#RUN pip uninstall numpy -y
+
+#RUN pip install IPython \ 
+#    && pip install orjson \
+#    && pip install python-multipart \
+#    && pip install torchao \
+#    && pip install pybind11 \
+#    && pip cache purge
+
+## Build Aiter
+#ARG AITER_REPO="https://github.com/ROCm/aiter.git"
+#ARG AITER_BRANCH="main"
+#ARG AITER_COMMIT="c84c61b"
+#RUN cd /opt && git clone -b ${AITER_BRANCH} --single-branch ${AITER_REPO}
+#WORKDIR /opt/aiter
+#RUN git checkout ${AITER_COMMIT}
+#COPY aiter-7e1ed.patch /opt/aiter/7e1ed.patch
+#RUN patch -p1 < 7e1ed.patch
+#RUN git submodule sync
+#RUN git submodule update --init --recursive
+#RUN pip install -r requirements.txt && \ 
+#    pip cache purge
+#COPY a8w8_blockscale_tuned_gemm.csv /opt/aiter/aiter/configs/a8w8_blockscale_tuned_gemm.csv
+#RUN GPU_ARCHS=${GFX_ARCH} python3 setup.py develop
+# RUN PREBUILD_KERNELS=1 GPU_ARCHS=${GFX_ARCH} USE_CK_A8W8=1 python3 setup.py develop
+# RUN cd op_tests &&
+#     python3 test_gemm_a8w8_blockscale.py && \
+#     python3 test_moe_blockscale.py && \
+#     python3 test_moe.py && \
+#     python3 test_mha.py && \
+#     python3 test_mha_varlen.py
+
+## Build Mpich
+## (source: https://github.com/pmodels/mpich/releases/download/v4.1.2/mpich-4.1.2.tar.gz)
+#ARG MPI_VERSION="4.1.2"
+#ARG MPI_SOURCE="mpich-4.1.2.tar.gz"
+#RUN dnf install -y gcc gcc-c++ gcc-gfortran make autoconf automake libtool pkgconf-pkg-config && \ 
+#    dnf clean dbcache
+#RUN --mount=type=bind,source=${MPI_SOURCE},target=/tmp/${MPI_SOURCE} \ 
+#    tar zxf /tmp/${MPI_SOURCE} -C /opt
+#WORKDIR /opt/mpich-${MPI_VERSION}/build
+#RUN ../configure --prefix=/opt/mpich/install && \ 
+#    make -j 16 && \
+#    make install && \
+#    make clean
+#ENV MPI_HOME="/opt/mpich/install"
+
+## Install RCCL
+#RUN dnf install -y rccl && dnf clean dbcache
+
+## Build RCCL tests
+#ARG RCCL_TESTS_REPO="https://github.com/ROCm/rccl-tests.git"
+#ADD --keep-git-dir=true ${RCCL_TESTS_REPO} /opt/rccl-tests
+#WORKDIR /opt/rccl-tests/build
+#RUN CXX=/opt/rocm/bin/hipcc cmake \ 
+#        -DAMDGPU_TARGETS=${GFX_ARCH} \
+#        -DCMAKE_CXX_FLAGS="-pthread" \
+#        -DCMAKE_EXE_LINKER_FLAGS="-pthread" \
+#        -DCMAKE_INSTALL_PREFIX=/opt/rocm \
+#        -DMPI_PATH=/opt/mpich/install \
+#        -DUSE_MPI=ON \
+#        .. && \
+#    make -j 16 && \
+#    make install && \
+#    make clean
+
+## Final stage
+# Performance environment variables
+ENV HIP_FORCE_DEV_KERNARG=1
+ENV HSA_NO_SCRATCH_RECLAIM=1
+#ENV MOE_PADDING=1
+ENV NCCL_MIN_NCHANNELS=112
+ENV PYTORCH_ROCM_ARCH="gfx90a;gfx942"
+ENV RAY_EXPERIMENTAL_NOSET_ROCR_VISIBLE_DEVICES=1
+ENV SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1
+ENV SGLANG_SET_CPU_AFFINITY=1
+ENV TOKENIZERS_PARALLELISM="false"
+#ENV VLLM_FP8_ACT_PADDING=1
+#ENV VLLM_FP8_PADDING=1
+#ENV VLLM_FP8_REDUCE_CONV=1
+#ENV VLLM_FP8_WEIGHT_PADDING=1
+#ENV VLLM_INSTALL_PUNICA_KERNELS=1
+#ENV TORCHINDUCTOR_MAX_AUTOTUNE=1
+#ENV TORCHINDUCTOR_MAX_AUTOTUNE_POINTWISE=1
+
+WORKDIR /opt
