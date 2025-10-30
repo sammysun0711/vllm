@@ -83,7 +83,7 @@ check_num_gpus() {
 ensure_python_library_installed() {
     echo "Checking if $1 is installed..."
     if ! python3 -c "import $1" > /dev/null 2>&1; then
-        echo "$1 is not installed. Please install it via pip install $1."
+        echo "$1 is not installed. Please install it via python3 -m pip install quart --ignore-installed."
         exit 1
     else
         echo "$1 is installed."
@@ -164,7 +164,7 @@ main() {
     local port=${PREFILL_PORT_ARRAY}
     local kv_port=21001
 
-    echo "Prefill server: GPU 0, 1, Port $port, KV Port $kv_port"
+    echo "Prefill server: GPU 0,1, Port $port, KV Port $kv_port"
     CUDA_VISIBLE_DEVICES=0,1 vllm serve $MODEL \
         --enforce-eager \
         --mm-processor-kwargs '{"use_fast": true}' \
@@ -177,7 +177,7 @@ main() {
         --max-num-batched-tokens 15000 \
         --max-num-seqs 1 \
         --trust-remote-code \
-        --gpu-memory-utilization 0.5 \
+        --gpu-memory-utilization 0.7 \
         --kv-transfer-config \
         "{\"kv_connector\":\"P2pNcclConnector\",\"kv_role\":\"kv_producer\",\"kv_buffer_size\":\"9e10\",\"kv_port\":\"$kv_port\",\"kv_connector_extra_config\":{\"proxy_ip\":\"0.0.0.0\",\"proxy_port\":\"$PROXY_PORT\",\"http_port\":\"$port\",\"send_type\":\"PUT_ASYNC\",\"nccl_num_channels\":\"64\"}}" > prefill.log 2>&1 &
     PIDS+=($!)
@@ -205,7 +205,7 @@ main() {
         --max-num-batched-tokens 15000 \
         --max-num-seqs 1 \
         --trust-remote-code \
-        --gpu-memory-utilization 0.5 \
+        --gpu-memory-utilization 0.7 \
         --max-seq-len-to-capture 15000 \
         --kv-transfer-config \
         "{\"kv_connector\":\"P2pNcclConnector\",\"kv_role\":\"kv_consumer\",\"kv_buffer_size\":\"16e10\",\"kv_port\":\"$kv_port\",\"kv_connector_extra_config\":{\"proxy_ip\":\"0.0.0.0\",\"proxy_port\":\"$PROXY_PORT\",\"http_port\":\"$port\",\"send_type\":\"PUT_ASYNC\",\"nccl_num_channels\":\"64\"}}" > decode.log 2>&1 &
@@ -234,7 +234,7 @@ main() {
     vllm bench serve --port 10001 --seed $(date +%s) \
         --model $MODEL \
         --dataset-name random --random-input-len 10000 --random-output-len 1000 \
-        --num-prompts 50 --max-concurrency=1 | tee benchmark.log
+        --num-prompts 5 --max-concurrency=1 | tee benchmark.log
 
     echo "Benchmarking done. Cleaning up..."
 
