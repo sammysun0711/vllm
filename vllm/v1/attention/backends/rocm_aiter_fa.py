@@ -1155,7 +1155,6 @@ class AiterFlashAttentionImpl(AttentionImpl):
                         dtype=torch.uint8,
                         device=output.device,
                     )
-
                     torch.ops.aiter.paged_attention_v1(
                         output[:num_decode_tokens],
                         workspace_buffer,
@@ -1175,6 +1174,7 @@ class AiterFlashAttentionImpl(AttentionImpl):
                         layer._v_scale,
                         None,
                         _PARTITION_SIZE_ROCM,
+                        sliding_window=self.sliding_window[0] + 1,
                     )
         else:
             raise NotImplementedError(
