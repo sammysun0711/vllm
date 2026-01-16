@@ -1113,6 +1113,7 @@ class AiterFlashAttentionImpl(AttentionImpl):
                     assert self.sliding_window[0] == -1, (
                         "Aiter assembly paged attention with kv cache shuffle layout" 
                         "does not support sliding window yet."
+                    )
                     num_blocks, block_size, num_kv_heads, head_size = key_cache.shape
                     x = 16 // key_cache.element_size()
                     k_cache_template = torch.empty(
