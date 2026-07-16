@@ -1786,9 +1786,9 @@ class rocm_aiter_ops:
     @classmethod
     @if_aiter_supported
     def is_tgemm_enabled(cls) -> bool:
-        from vllm.platforms.rocm import on_gfx950
+        from vllm.platforms.rocm import on_gfx942, on_gfx950
 
-        return cls.is_linear_enabled() and on_gfx950()
+        return cls.is_linear_enabled() and (on_gfx942() or on_gfx950())
 
     @classmethod
     def get_aiter_allreduce(cls):
